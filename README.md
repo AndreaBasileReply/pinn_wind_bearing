@@ -123,9 +123,17 @@ argument is omitted and the curves are split by `metodo`.
 | `--split` | `test` (default) or `train`, for the grease panel |
 | `--linear` | linear y axis instead of log |
 
-Several runs at the same percentage — ten cases, say — are averaged, with the spread
-drawn as a vertical min–max bar. That is the way to get a curve whose shape means
-something: see the caveat under *Physics as a data multiplier*.
+**Read the shape with care.** With `--physics` the SKF chain has no parameters, so its
+curve is not measuring the physics against the amount of data — the physics is identical
+at all five points. It measures how well step 3 happened to fit turbine 8, the only one
+with damage ground truth, in that particular subset. Measured on case 4, the bearing MSE
+tracks turbine 8's grease error almost exactly (ratio 2.43, 2.54, 2.54, 2.59, 2.26
+×10⁻⁴) and is unrelated to the grease error averaged over all turbines. Both curves rise
+from 20% to 60% for that reason: at 20% the two training turbines include turbine 8
+itself, so its grease is fitted almost to measure. The comparison between the two curves
+holds at every percentage — both branches start from the same predicted grease. Averaging
+over several cases (run them into the same `--outdir` and drop `--caso`) is what makes
+the shape along x mean something.
 
 ---
 
