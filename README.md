@@ -49,8 +49,9 @@ MPLBACKEND=Agg python train.py --physics --case 3
 Run them from that directory (the scripts resolve data as `../data`), and keep
 `MPLBACKEND=Agg` on WSL, where there is no display.
 
-`--bearing-epochs` changes step 4's budget (default 300). Everything else follows the
-paper's values and is deliberately not exposed as an option.
+`--bearing-epochs` changes step 4's budget (default 300). `--train-frac` cuts the
+training set, and defaults to `100` — all the data, one run. Everything else follows
+the paper's values and is deliberately not exposed as an option.
 
 ### The ten cases
 
@@ -76,6 +77,55 @@ done
 **Verification.** `--physics --case 3` must print
 `grasso_rmse_test = 0.05311429793267597` and
 `cuscinetto_rmse = 0.0006088197193056023`. If those match, the environment is correct.
+
+### Data efficiency comparison
+
+`--train-frac` defaults to `100` — all the data, one run. Give it several percentages
+separated by commas and they are trained in sequence, one run each, so the two methods
+can be compared at every level. Each percentage shrinks the training set like this:
+
+| branch | what shrinks |
+|---|---|
+| step 3, grease | fewer turbines, all 6 inspections each. Turbine 8 is always kept — step 4 needs its predicted grease. |
+| step 4, bearing | fewer inspections of turbine 8, the only one with damage ground truth: evenly spaced, always including the sixth. Only matters with `--no-physics`; the SKF chain does not train. |
+
+Each percentage gets its own run folder, with the fraction in the name and in
+`config.json` (`train_frac`, `train_pct`), and appends its row to
+`<outdir>/loss_on_percentage.csv` — one row per `(method, case, percentage)`, replaced
+rather than duplicated when a point is re-run. Give both methods the same `--outdir`
+and that one file holds both curves.
+
+```bash
+cd deterministic_grease_inspection/ijphm_2020/advanced
+
+# one command per method, five percentages each
+MPLBACKEND=Agg python train.py --physics    --case 4 --train-frac 20,40,60,80,100 --outdir runs
+MPLBACKEND=Agg python train.py --no-physics --case 4 --train-frac 20,40,60,80,100 --outdir runs
+
+python compare_data_efficiency.py runs/loss_on_percentage.csv
+```
+
+The row for each percentage is written as soon as that percentage finishes, so a curve
+interrupted halfway keeps what it already produced. Budget roughly 9 minutes per point
+with physics and 13 without, on 8 CPU cores.
+
+`compare_data_efficiency.py` writes `data_efficiency.png` plus the aggregated table as
+`.csv`: MSE on the y axis, percentage of training data on the x axis, one curve per
+method. Each argument is either a `loss_on_percentage.csv` or a `runs/` directory — it
+tells them apart on its own. When one source already holds both methods the second
+argument is omitted and the curves are split by `metodo`.
+
+| option | effect |
+|---|---|
+| `--target` | `cuscinetto` (default), `grasso`, or `entrambi` — two panels |
+| `--bearing-metric` | `ispezioni` (default): masked MSE on the 6 damage inspections, the quantity the MLP minimises and the only one comparable between the two methods, since the SKF chain has no training loss. `curva`: MSE over the daily curve |
+| `--caso N` | keep one case; without it, runs of different cases at the same percentage are averaged and drawn with a min–max band |
+| `--split` | `test` (default) or `train`, for the grease panel |
+| `--linear` | linear y axis instead of log |
+
+Several runs at the same percentage — ten cases, say — are averaged, with the spread
+drawn as a vertical min–max bar. That is the way to get a curve whose shape means
+something: see the caveat under *Physics as a data multiplier*.
 
 ---
 
@@ -175,6 +225,7 @@ so it does not leak the answer.
 | `data` → | symlink to the dataset time series (load, temperature, grease, cycles) |
 | `tables` → | symlink to the SKF catalogue charts (`kappa`, `etac`, `aSKF`) |
 | **`advanced/train.py`** | **the entry point** — the full pipeline, `--physics` / `--no-physics` / `--case` |
+| **`advanced/compare_data_efficiency.py`** | MSE against percentage of training data, physics vs MLP |
 | `advanced/runs/` | one timestamped folder per run (gitignored) |
 | `advanced/pinn_model.py` | the authors' SKF chain for the 30-year forecast |
 | `advanced/case_config.py` | the authors' `CASE=<n>` switch for `run01`–`run04` |
@@ -192,7 +243,7 @@ to run on Linux with TF 2.15. They still work, but `train.py` supersedes them.
 
 ### What a run produces
 
-`advanced/runs/<timestamp>_case<N>_<method>/`
+`advanced/runs/<timestamp>_case<N>_<method>_pct<P>/`
 
 | file | content |
 |---|---|
@@ -207,6 +258,12 @@ to run on Linux with TF 2.15. They still work, but `train.py` supersedes them.
 | `cuscinetto_predictions.csv` | bearing damage: predicted, true, error |
 | `models/` | trained MLP, RNN weights, the initial plane |
 | `plots/` | loss, predicted-vs-actual, test curves, bearing damage |
+
+One level up, in `--outdir` itself:
+
+| file | content |
+|---|---|
+| `loss_on_percentage.csv` | one row per `(method, case, percentage)`: masked MSE on the damage inspections and on the daily curve, final grease and bearing losses, grease test MSE, turbines and inspections used. Grows across runs; the input `compare_data_efficiency.py` expects |
 
 Every CSV carries a `metodo` and `caso` column, so runs never get confused.
 

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Addestra il modello completo del paper, con o senza fisica sul ramo cuscinetto.
 
-    python train.py --physics    [--case N]
-    python train.py --no-physics [--case N]
+    python train.py --physics    [--case N] [--train-frac F]
+    python train.py --no-physics [--case N] [--train-frac F]
 
 La pipeline e' quella dell'articolo (Yucesan & Viana, IJPHM 11(1), 2020):
 
@@ -18,6 +18,24 @@ L'unica differenza fra i due comandi e' il passo 4:
                  Palmgren-Miner.  Zero parametri, zero dati, nessun addestramento.
   --no-physics   un MLP con gli stessi ingressi calcola l'incremento al posto
                  della catena SKF, addestrato contro la curva di danno reale.
+
+--train-frac riduce i dati di training, per le curve di data efficiency.  Di default
+e' 100 (tutti i dati, un run solo).  Piu' percentuali separate da virgola vengono
+addestrate in sequenza, un run per percentuale:
+
+    python train.py --physics --train-frac 20,40,60,80,100
+
+La riga in loss_on_percentage.csv viene scritta alla fine di ogni percentuale, quindi
+una curva interrotta a meta' conserva i punti gia' passati.  Cosa si riduce:
+
+  passo 3 (grasso)      meno turbine, con tutte e 6 le ispezioni.  La turbina 8 resta
+                        sempre dentro: il passo 4 usa il suo grasso previsto.
+  passo 4 (cuscinetto)  meno ispezioni della turbina 8, l'unica con la verita' sul
+                        danno: scelte spaziate e sempre comprendendo la sesta.  Conta
+                        solo con --no-physics, perche' la catena SKF non si addestra.
+
+La frazione finisce in config.json (train_frac, train_pct) e nel nome della cartella
+del run (..._case4_physics_pct40), cosi' compare_data_efficiency.py la ritrova.
 
 NOTA SUI DATI: la verita' sul danno del cuscinetto esiste per una sola turbina.
 True_FatigueDamage_6Months_bsc.csv e' la TURBINA 8, non la 1: con gli ingressi
@@ -98,29 +116,72 @@ def rnn_grasso(mlp, shape, lo, up):
     return m
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument('--physics', action='store_true',
-                   help='ramo cuscinetto con la catena SKF (situazione del paper)')
-    g.add_argument('--no-physics', dest='nophysics', action='store_true',
-                   help='ramo cuscinetto con un MLP al posto della formula')
-    ap.add_argument('--case', type=int, default=3, choices=range(1, 11), metavar='N',
-                    help='inizializzazione del piano, da 1 a 10 (default: 3)')
-    ap.add_argument('--bearing-epochs', type=int, default=300,
-                    help='solo con --no-physics (default: 300)')
-    ap.add_argument('--outdir', default='runs')
-    ap.add_argument('--nota', default='')
-    A = ap.parse_args()
+def sottoinsieme_turbine(n_tot, frac):
+    """Turbine di training tenute da --train-frac, in ordine, TURB_CUSC compresa."""
+    n = max(1, int(round(frac*n_tot)))
+    altre = [i for i in range(n_tot) if i != IDX_CUSC]
+    return sorted([IDX_CUSC] + altre[:n-1])
 
-    metodo = 'physics' if A.physics else 'nophysics'
-    seed = 3000 + A.case
-    ts = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-    out = os.path.join(A.outdir, '%s_case%d_%s' % (ts, A.case, metodo))
+
+def sottoinsieme_ispezioni(n_tot, frac):
+    """Ispezioni del cuscinetto tenute da --train-frac: spaziate, l'ultima sempre."""
+    n = max(1, int(round(frac*n_tot)))
+    return np.unique(np.round(np.linspace(n_tot-1, 0, n)).astype(int))
+
+
+def aggiorna_loss_on_percentage(percorso, riga):
+    """Aggiunge (o rimpiazza) la riga di questo run nel CSV cumulativo.
+
+    Una riga per (metodo, caso, percentuale): rilanciando lo stesso punto il valore
+    vecchio viene sostituito, non duplicato.  Il file vive in --outdir, quindi per
+    avere fisica e non-fisica nello stesso CSV basta dare lo stesso --outdir ai due
+    comandi.  L'ordine e' per metodo e percentuale, cosi' le due curve si leggono
+    affiancate senza doverlo riordinare.
+    """
+    col = ['percentuale', 'metodo', 'caso', 'mse_danno_ispezioni', 'mse_danno_curva',
+           'loss_grasso', 'loss_cuscinetto', 'mse_grasso_test', 'turbine',
+           'ispezioni_cuscinetto', 'epoche_cuscinetto', 'timestamp', 'run']
+    chiave = lambda r: (r['metodo'], r['caso'], r['percentuale'])
+    righe = {}
+    if os.path.isfile(percorso):
+        for r in pd.read_csv(percorso).to_dict('records'):
+            righe[chiave(r)] = r
+    righe[chiave(riga)] = riga
+    pd.DataFrame(list(righe.values()), columns=col).sort_values(
+        ['metodo', 'percentuale']).to_csv(percorso, index=False)
+    return percorso
+
+
+def leggi_frazioni(spec):
+    """'20,40,60,80,100' oppure '40' oppure '0.4' -> lista di frazioni in (0, 1]."""
+    fr = []
+    for pezzo in str(spec).replace(' ', '').split(','):
+        if not pezzo:
+            continue
+        try:
+            v = float(pezzo)
+        except ValueError:
+            sys.exit('--train-frac non numerico: %r' % pezzo)
+        f = v/100.0 if v > 1 else v
+        if not 0 < f <= 1:
+            sys.exit('--train-frac fuori intervallo: atteso 0-1 oppure 1-100, ricevuto %g' % v)
+        fr.append(f)
+    if not fr:
+        sys.exit('--train-frac vuoto')
+    return sorted(set(fr))
+
+
+def esegui(A, frac, ts, metodo, seed):
+    """Un punto della curva: addestra con la frazione `frac` dei dati e salva tutto.
+
+    La riga in loss_on_percentage.csv viene scritta qui, alla fine di questa
+    percentuale: interrompendo una curva a meta\' si tiene quello che e\' gia\' passato.
+    """
+    pct = int(round(100*frac))
+    out = os.path.join(A.outdir, '%s_case%d_%s_pct%d' % (ts, A.case, metodo, pct))
     for sub in ('models', 'plots'):
         os.makedirs(os.path.join(out, sub), exist_ok=True)
-    print('-> %s   (caso #%d, %s)' % (out, A.case, metodo))
+    print('-> %s   (caso #%d, %s, %d%% dei dati)' % (out, A.case, metodo, pct))
 
     parent = os.path.dirname(os.getcwd())
     rd = lambda f: pd.read_csv(parent+'/data/'+f)
@@ -132,6 +193,17 @@ def main():
     Vte = np.asarray(rd('ViscDamage_6Months_Val_adv.csv').dropna())
     Xtr, Xte = np.dstack((1/Ptr, Ttr)), np.dstack((1/Pte, Tte))
     Ytr = np.transpose(np.asarray([Vtr[INSP, :]]))
+
+    n_turb_tot = Xtr.shape[0]
+    i_turb = sottoinsieme_turbine(n_turb_tot, frac)
+    Xtr, Ytr, Vtr = Xtr[i_turb], Ytr[i_turb], Vtr[:, i_turb]
+    turbine_id = [i+1 for i in i_turb]               # numerazione del dataset intero
+    i_cusc = i_turb.index(IDX_CUSC)                  # TURB_CUSC nel set ridotto
+    j_isp = sottoinsieme_ispezioni(len(INSP), frac)
+    INSP_B = INSP[j_isp]                             # ispezioni viste dal passo 4
+    print('   grasso: %d/%d turbine %s   cuscinetto: %d/%d ispezioni %s'
+          % (len(i_turb), n_turb_tot, turbine_id, len(INSP_B), len(INSP),
+             [int(k)+1 for k in j_isp]))
 
     t0 = time.time()
     # ---- 1-2. piano e MLP -------------------------------------------------
@@ -171,7 +243,7 @@ def main():
                                  header=None).iloc[:, 0])
     nb = min(len(Pc), len(Ver))
     Pc, Tc, Cyc, Ver = Pc[:nb], Tc[:nb], Cyc[:nb], Ver[:nb]
-    Gc = Gtr[IDX_CUSC][:nb]                          # grasso PREVISTO dal passo 3
+    Gc = Gtr[i_cusc][:nb]                            # grasso PREVISTO dal passo 3
     Xb = np.dstack((Gc, Cyc, np.log10(Pc), Tc))
     d0b = np.zeros((1, 1), dtype='float32')
     hb = None
@@ -204,13 +276,14 @@ def main():
                                    initial_damage=d0b)
         mb = Sequential(); mb.add(RNN(cell=cb, return_sequences=True, return_state=False,
                                       batch_input_shape=Xb.shape, unroll=False))
-        mb.compile(loss=masked_mse(INSP), optimizer=RMSprop(RNN_LR), metrics=[masked_mse(INSP)])
-        hb = mb.fit(Xb, Ver[INSP].reshape(1, 6, 1), epochs=A.bearing_epochs, verbose=0,
-                    steps_per_epoch=1,
+        mb.compile(loss=masked_mse(INSP_B), optimizer=RMSprop(RNN_LR),
+                   metrics=[masked_mse(INSP_B)])
+        hb = mb.fit(Xb, Ver[INSP_B].reshape(1, len(INSP_B), 1), epochs=A.bearing_epochs,
+                    verbose=0, steps_per_epoch=1,
                     callbacks=[ReduceLROnPlateau(monitor='loss', factor=0.7, min_lr=1e-15,
                                                  patience=10, mode='min')])
         mb.save_weights(os.path.join(out, 'models', 'mlp_cuscinetto.h5py'))
-        n_oss_b, ep_b = 6, A.bearing_epochs
+        n_oss_b, ep_b = len(INSP_B), A.bearing_epochs
         desc_b = 'MLP al posto della catena SKF, %d osservazioni' % n_oss_b
     Bpred = mb.predict(Xb, verbose=0)[0, :, 0]
     t_cusc = time.time()-t1
@@ -225,10 +298,11 @@ def main():
             os.path.join(out, 'loss_cuscinetto.csv'), index=False)
 
     righe = []
-    for split, P_, V_ in (('train', Gtr, Vtr), ('test', Gte, Vte)):
+    ids_te = list(range(1, Vte.shape[1]+1))
+    for split, P_, V_, ids in (('train', Gtr, Vtr, turbine_id), ('test', Gte, Vte, ids_te)):
         for i in range(P_.shape[0]):
             for k, idx in enumerate(INSP):
-                righe.append(dict(split=split, metodo=metodo, caso=A.case, turbina=i+1,
+                righe.append(dict(split=split, metodo=metodo, caso=A.case, turbina=ids[i],
                                   ispezione=k+1, previsto=float(P_[i, idx]),
                                   reale=float(V_[idx, i]), errore=float(V_[idx, i]-P_[i, idx])))
     dfg = pd.DataFrame(righe)
@@ -251,6 +325,10 @@ def main():
     rmse = lambda a, b: float(np.sqrt(np.mean((np.asarray(a)-np.asarray(b))**2)))
     M = dict(
         metodo=metodo, usa_fisica=bool(A.physics), caso=A.case, seed=seed,
+        dati=dict(frazione=frac, percentuale=pct,
+                  turbine_grasso=len(i_turb), turbine_totali=n_turb_tot,
+                  turbine=turbine_id, osservazioni_grasso=int(len(i_turb)*len(INSP)),
+                  ispezioni_cuscinetto=int(len(INSP_B)), ispezioni_totali=int(len(INSP))),
         grasso=dict(modello='accumulo danno + MLP (invariato nei due comandi)',
                     parametri=int(sum(np.prod(w.shape) for w in mg.trainable_weights)),
                     epoche_mlp=MLP_EPOCHS, epoche_rnn=RNN_EPOCHS,
@@ -271,7 +349,21 @@ def main():
                    max=float(piano.delDkappa.max())),
         tempo_totale_s=round(t_grasso+t_cusc, 1))
     json.dump(M, open(os.path.join(out, 'metrics.json'), 'w'), indent=2)
+
+    # curva loss/percentuale, cumulativa fra i run
+    fcsv = aggiorna_loss_on_percentage(
+        os.path.join(A.outdir, 'loss_on_percentage.csv'),
+        dict(percentuale=pct, metodo=metodo, caso=A.case,
+             mse_danno_ispezioni=M['cuscinetto']['rmse_ispezioni']**2,
+             mse_danno_curva=M['cuscinetto']['rmse_curva']**2,
+             loss_grasso=M['grasso']['loss_finale'],
+             loss_cuscinetto=M['cuscinetto']['loss_finale'],
+             mse_grasso_test=M['grasso']['mse_test'],
+             turbine=len(i_turb), ispezioni_cuscinetto=int(len(INSP_B)),
+             epoche_cuscinetto=int(ep_b), timestamp=ts,
+             run=os.path.basename(out)))
     json.dump({**vars(A), 'metodo': metodo, 'seed': seed, 'timestamp': ts,
+               'train_frac': frac, 'train_pct': pct,
                'mlp_epochs': MLP_EPOCHS, 'mlp_lr': MLP_LR, 'rnn_epochs': RNN_EPOCHS,
                'rnn_lr': RNN_LR, 'python': sys.version.split()[0],
                'tensorflow': tf.__version__}, open(os.path.join(out, 'config.json'), 'w'), indent=2)
@@ -323,12 +415,48 @@ def main():
     lg = a.legend(frameon=False, fontsize=9.5); [t.set_color(INK) for t in lg.get_texts()]
     f.tight_layout(); f.savefig(os.path.join(out, 'plots', 'cuscinetto_damage.png'), dpi=160); plt.close(f)
 
-    print(json.dumps({'caso': A.case, 'metodo': metodo,
+    print(json.dumps({'caso': A.case, 'metodo': metodo, 'dati_pct': pct,
+                      'cuscinetto_mse_ispezioni': M['cuscinetto']['rmse_ispezioni']**2,
                       'grasso_rmse_test': M['grasso']['rmse_test'],
                       'cuscinetto_rmse': M['cuscinetto']['rmse_curva'],
                       'cuscinetto_errore_finale_pct': M['cuscinetto']['errore_finale_pct'],
                       'tempo_totale_s': M['tempo_totale_s']}, indent=2))
     print('salvato in %s' % out)
+    print('curva loss/percentuale aggiornata: %s' % fcsv)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument('--physics', action='store_true',
+                   help='ramo cuscinetto con la catena SKF (situazione del paper)')
+    g.add_argument('--no-physics', dest='nophysics', action='store_true',
+                   help='ramo cuscinetto con un MLP al posto della formula')
+    ap.add_argument('--case', type=int, default=3, choices=range(1, 11), metavar='N',
+                    help='inizializzazione del piano, da 1 a 10 (default: 3)')
+    ap.add_argument('--train-frac', default='100', metavar='F',
+                    help='percentuale di dati di training (default: 100). Piu\' valori '
+                         'separati da virgola vengono addestrati in sequenza, un run '
+                         'per percentuale: --train-frac 20,40,60,80,100')
+    ap.add_argument('--bearing-epochs', type=int, default=300,
+                    help='solo con --no-physics (default: 300)')
+    ap.add_argument('--outdir', default='runs')
+    ap.add_argument('--nota', default='')
+    A = ap.parse_args()
+
+    metodo = 'physics' if A.physics else 'nophysics'
+    seed = 3000 + A.case
+    ts = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+    frazioni = leggi_frazioni(A.train_frac)
+    if len(frazioni) > 1:
+        print('curva su %d percentuali: %s   (--train-frac F per un punto solo)'
+              % (len(frazioni), ', '.join('%d%%' % round(100*f) for f in frazioni)))
+    for k, frac in enumerate(frazioni):
+        if k:
+            tf.keras.backend.clear_session()         # i grafi della RNN srotolata pesano
+        esegui(A, frac, ts, metodo, seed)
+
 
 
 if __name__ == '__main__':
