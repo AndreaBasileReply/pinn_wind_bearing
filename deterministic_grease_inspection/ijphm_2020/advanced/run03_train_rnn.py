@@ -49,6 +49,8 @@ import os
 
 from pinn.layers import CumulativeDamageCell
 
+from case_config import SUFFIX, RUN30
+
 from tensorflow import concat, expand_dims
 from tensorflow.keras import Sequential
 from tensorflow.keras.losses import mean_squared_error as mse
@@ -106,12 +108,12 @@ if __name__ == "__main__":
 
         parent_dir = os.path.dirname(os.getcwd())
         
-        dfLoad = pd.read_csv(parent_dir+'\data\\DynamicLoad_6Months.csv', index_col = None)
+        dfLoad = pd.read_csv(parent_dir+'/data/DynamicLoad_6Months.csv', index_col = None)
         dfLoad = dfLoad.dropna()
         PFleet = np.transpose(np.asarray(dfLoad))
         PFleetInv = 1/PFleet
         
-        dfTemp = pd.read_csv(parent_dir+'\data\\BearingTemp_6Months.csv', index_col = None)
+        dfTemp = pd.read_csv(parent_dir+'/data/BearingTemp_6Months.csv', index_col = None)
         dfTemp = dfTemp.dropna()
         BTempFleet = np.transpose(np.asarray(dfTemp))
         
@@ -123,7 +125,7 @@ if __name__ == "__main__":
         d0RNN = np.asarray([0.0])
         d0RNN = d0RNN * np.ones((inputArray.shape[0], 1), dtype=myDtype)
         
-        dfVsc = pd.read_csv(parent_dir+'\data\\ViscDamage_6Months.csv', index_col = None)
+        dfVsc = pd.read_csv(parent_dir+'/data/ViscDamage_6Months.csv', index_col = None)
         dfVsc = np.asarray(dfVsc.dropna())
             
         multipleInspections = np.transpose(np.asarray([dfVsc[inspectionArray,:]]))
@@ -135,10 +137,10 @@ if __name__ == "__main__":
         
         EPOCHS = 50
         
-        mlp_model = load_model('.\models\MLP_RANDOM_PLANE.h5py')
+        mlp_model = load_model('./models/MLP_RANDOM_PLANE'+SUFFIX+'.h5py')
         mlp_model.trainable = True
         
-        dfPlane = pd.read_csv(parent_dir+'\data\\random_plane_set_500_adv.csv', index_col = None)
+        dfPlane = pd.read_csv(parent_dir+'/data/random_plane_set_500_adv'+SUFFIX+'.csv', index_col = None)
         trainingSet_delgrs = dfPlane
         lowBounds_delgrs = np.asarray([np.min(trainingSet_delgrs['delDkappa'])])
         upBounds_delgrs = np.asarray([np.max(trainingSet_delgrs['delDkappa'])])
@@ -155,9 +157,9 @@ if __name__ == "__main__":
         
         df = pd.DataFrame.from_dict(history.history)
         df.insert(loc = 0, column='epoch', value = history.epoch)
-        df.to_csv("./models/lossHistory.csv", index = False)
+        df.to_csv("./models/lossHistory"+SUFFIX+".csv", index = False)
         
-        RNNmodel.save_weights('.\models\RNN_WEIGHTS_RANDOM_PLANE.h5py')
+        RNNmodel.save_weights('./models/RNN_WEIGHTS_RANDOM_PLANE'+SUFFIX+'.h5py')
     
         
         result = RNNmodel.predict(inputArray)
@@ -165,12 +167,12 @@ if __name__ == "__main__":
         
         InspectionsPreds = np.asarray([np.transpose(result)[0][inspectionArray,:]])
         
-        dfLoad = pd.read_csv(parent_dir+'\data\\DynamicLoad_6Months_Val_adv.csv', index_col = None)
+        dfLoad = pd.read_csv(parent_dir+'/data/DynamicLoad_6Months_Val_adv.csv', index_col = None)
         dfLoad = dfLoad.dropna()
         PFleet = np.transpose(np.asarray(dfLoad))
         PFleetInv = 1/PFleet
         
-        dfTemp = pd.read_csv(parent_dir+'\data\\BearingTemp_6Months_Val_adv.csv', index_col = None)
+        dfTemp = pd.read_csv(parent_dir+'/data/BearingTemp_6Months_Val_adv.csv', index_col = None)
         dfTemp = dfTemp.dropna()
         BTempFleet = np.transpose(np.asarray(dfTemp))
         
@@ -184,10 +186,10 @@ if __name__ == "__main__":
         RNNValmodel = create_model(inspectionArray, mlp_model, d0RNN, batch_input_shape,
                                  lowBounds_delgrs, upBounds_delgrs,
                                  myDtype, return_sequences = True, unroll = False)
-        RNNValmodel.load_weights('.\models\RNN_WEIGHTS_RANDOM_PLANE.h5py')
+        RNNValmodel.load_weights('./models/RNN_WEIGHTS_RANDOM_PLANE'+SUFFIX+'.h5py')
         resultVal = RNNValmodel.predict(InputArrayVal)
         
-        dfVscVal = pd.read_csv(parent_dir+'\data\\ViscDamage_6Months_Val_adv.csv', index_col = None)
+        dfVscVal = pd.read_csv(parent_dir+'/data/ViscDamage_6Months_Val_adv.csv', index_col = None)
         dfVscVal = np.asarray(dfVscVal.dropna())
             
         multipleValInspections = np.asarray([dfVscVal[inspectionArray,:]])
@@ -208,14 +210,27 @@ if __name__ == "__main__":
         plt.ylim(yLB, yUB)
         plt.grid(which='both')
         plt.legend()
-        plt.savefig('./plots/ActualvsPredict.png')
+        plt.savefig('./plots/ActualvsPredict'+SUFFIX+'.png')
+
+        pd.DataFrame({
+            'observed_train':  np.transpose(multipleInspections).flatten(),
+            'before_training': InspectionsBefore.flatten(),
+            'after_training':  InspectionsPreds.flatten(),
+        }).to_csv('./plots/inspections_train'+SUFFIX+'.csv', index=False)
+        pd.DataFrame({
+            'observed_val':  multipleValInspections.flatten(),
+            'predicted_val': InspectionsVal.flatten(),
+        }).to_csv('./plots/inspections_val'+SUFFIX+'.csv', index=False)
         
-        dfLoad = pd.read_csv(parent_dir+'\data\\DynamicLoad_30Years_adv.csv', index_col = None)
+        if not RUN30:
+            raise SystemExit(0)
+
+        dfLoad = pd.read_csv(parent_dir+'/data/DynamicLoad_30Years_adv.csv', index_col = None)
         dfLoad = dfLoad[:6*24*180*40]
         dfLoad = np.asarray(dfLoad).reshape((40,6*24*180))
         PFleetInv = 1/dfLoad
         
-        dfTemp = pd.read_csv(parent_dir+'\data\\BearingTemp_30Years_adv.csv', index_col = None)
+        dfTemp = pd.read_csv(parent_dir+'/data/BearingTemp_30Years_adv.csv', index_col = None)
         dfTemp = dfTemp[:6*24*180*40]
         dfTemp = np.asarray(dfTemp).reshape((40,6*24*180))
         BTempFleet = dfTemp
@@ -229,10 +244,10 @@ if __name__ == "__main__":
         RNN30model = create_model(inspectionArray, mlp_model, d0RNN, batch_input_shape,
                                  lowBounds_delgrs, upBounds_delgrs,
                                  myDtype, return_sequences = True, unroll = False)
-        RNN30model.load_weights('.\models\RNN_WEIGHTS_RANDOM_PLANE.h5py')
+        RNN30model.load_weights('./models/RNN_WEIGHTS_RANDOM_PLANE'+SUFFIX+'.h5py')
         
         result30 = RNN30model.predict(InputArray30)
 
         dfres = pd.DataFrame(data=result30[:,:,0].transpose())
-        dfres.to_csv(parent_dir+'\data\\Dkappa_30Years_adv.csv',index=False, header=False)
+        dfres.to_csv(parent_dir+'/data/Dkappa_30Years_adv'+SUFFIX+'.csv',index=False, header=False)
         

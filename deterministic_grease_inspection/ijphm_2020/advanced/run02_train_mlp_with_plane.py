@@ -54,6 +54,8 @@ from tensorflow.keras.callbacks import ReduceLROnPlateau
 
 from pinn.layers import getScalingDenseLayer
 
+from case_config import SUFFIX
+
 # =============================================================================
 #     MLP TRAINING WITH PLANE
 # =============================================================================
@@ -77,7 +79,7 @@ if __name__ == "__main__":
     
     parent_dir = os.path.dirname(os.getcwd())
     
-    dfPlane = pd.read_csv(parent_dir+'\data\\random_plane_set_500_adv.csv')
+    dfPlane = pd.read_csv(parent_dir+'/data/random_plane_set_500_adv'+SUFFIX+'.csv')
 
     inputsMLPTrain = dfPlane[['Dkappa','dynamicLoads','bearingTemp']]
     inputsMLPTrain_min = inputsMLPTrain.min(axis=0)
@@ -91,7 +93,7 @@ if __name__ == "__main__":
     outputsMLPTrain_range = outputsMLPTrain.max(axis=0) - outputsMLPTrain_min
     outputsMLPTrain_norm = (outputsMLPTrain - outputsMLPTrain_min)/outputsMLPTrain_range
     
-    dfTrueDOE = pd.read_csv(parent_dir+'\data\\true_set_500_adv.csv')
+    dfTrueDOE = pd.read_csv(parent_dir+'/data/true_set_500_adv.csv')
 
     inputsMLPPred = dfTrueDOE[['Dkappa','dynamicLoads','bearingTemp']]
     
@@ -106,7 +108,7 @@ if __name__ == "__main__":
     MLP_EPOCHS = 500
     MLPhistory = MLPmodel.fit(inputsMLPTrain, outputsMLPTrain_norm, epochs=MLP_EPOCHS, verbose=1, callbacks=callbacks_list, validation_data= (inputsMLPPred,outputsMLPPred_norm))
     
-    MLPmodel.save('.\models\MLP_RANDOM_PLANE.h5py')
+    MLPmodel.save('./models/MLP_RANDOM_PLANE'+SUFFIX+'.h5py')
     
     MLPresults = MLPmodel.predict(inputsMLPPred)
     
@@ -123,5 +125,5 @@ if __name__ == "__main__":
     plt.ylim(yLB, yUB)
     plt.grid(which='both')
     plt.tight_layout()
-    plt.savefig('./plots/Plane_ActualvsPredict.png')
+    plt.savefig('./plots/Plane_ActualvsPredict'+SUFFIX+'.png')
     

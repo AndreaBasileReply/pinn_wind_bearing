@@ -60,12 +60,12 @@ if __name__ == "__main__":
     parent_dir = os.path.dirname(os.getcwd())
     
     # Import and manipulate input data 
-    dfLoad = pd.read_csv(parent_dir+'\data\\DynamicLoad_6Months.csv', index_col = None)
+    dfLoad = pd.read_csv(parent_dir+'/data/DynamicLoad_6Months.csv', index_col = None)
     dfLoad = dfLoad.dropna()
     PFleet = np.transpose(np.asarray(dfLoad))
     PFleetInv = 1/PFleet
     
-    dfTemp = pd.read_csv(parent_dir+'\data\\BearingTemp_6Months.csv', index_col = None)
+    dfTemp = pd.read_csv(parent_dir+'/data/BearingTemp_6Months.csv', index_col = None)
     dfTemp = dfTemp.dropna()
     BTempFleet = np.transpose(np.asarray(dfTemp))
     
@@ -78,18 +78,18 @@ if __name__ == "__main__":
     d0RNN = d0RNN * np.ones((inputArray.shape[0], 1), dtype=myDtype)
     
     # Import and set inspection data
-    dfVsc = pd.read_csv(parent_dir+'\data\\ViscDamage_6Months.csv', index_col = None)
+    dfVsc = pd.read_csv(parent_dir+'/data/ViscDamage_6Months.csv', index_col = None)
     dfVsc = np.asarray(dfVsc.dropna())
     
     inspectionArray = np.asarray([6*24*30*1,6*24*30*2,6*24*30*3,6*24*30*4,6*24*30*5,6*24*30*6-1])
     multipleInspections = np.transpose(np.asarray([dfVsc[inspectionArray,:]]))
     
     # Load MLP Model
-    mlp_model = load_model('.\models\MLP_PLANE.h5py')
+    mlp_model = load_model('./models/MLP_PLANE.h5py')
     mlp_model.trainable = True
     
     # Set upper and lower bounds for rescaling of MLP output
-    dfPlane = pd.read_csv(parent_dir+'\data\\random_plane_set_500_bsc.csv', index_col = None)
+    dfPlane = pd.read_csv(parent_dir+'/data/random_plane_set_500_bsc.csv', index_col = None)
     trainingSet_delgrs = dfPlane
     lowBounds_delgrs = np.asarray([np.min(trainingSet_delgrs['delDkappa'])])
     upBounds_delgrs = np.asarray([np.max(trainingSet_delgrs['delDkappa'])])
@@ -114,11 +114,11 @@ if __name__ == "__main__":
     df.insert(loc = 0, column='epoch', value = history.epoch)
     df.to_csv("./models/lossHistory.csv", index = False)
     
-    RNNmodel.save_weights('.\models\RNN_WEIGHTS.h5py')
+    RNNmodel.save_weights('./models/RNN_WEIGHTS.h5py')
 
     # Save the Dkappa output to use for prediction
     result = RNNmodel.predict(inputArray)
 
     dfres = pd.DataFrame(data=result[0,:,0].transpose())
-    dfres.to_csv(parent_dir+'\data\\Dkappa_Prediction_6Months_bsc.csv',index=False, header=False)
+    dfres.to_csv(parent_dir+'/data/Dkappa_Prediction_6Months_bsc.csv',index=False, header=False)
     

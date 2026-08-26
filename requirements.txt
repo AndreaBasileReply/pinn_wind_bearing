@@ -1,0 +1,63 @@
+# Exact environment used for the reproduction (pip freeze, Python 3.11).
+#
+#   python3.11 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#   patch -d "$(python -c 'import pinn,os;print(os.path.dirname(os.path.dirname(pinn.__file__)))')" \
+#         -p0 < pinn-tf215.patch      # <-- MANDATORY, see README
+#
+# pml-pinn 0.0.3 targets TensorFlow 2.0 (2019) and does NOT run on TF 2.15 as
+# published. pinn-tf215.patch fixes three incompatibilities; without it the
+# import of tensorflow.python.keras and TableInterpolation.call both break.
+
+# --- core ---------------------------------------------------------------
+tensorflow==2.15.1
+keras==2.15.0
+numpy==1.26.4
+pandas==2.3.3
+scipy==1.17.1
+matplotlib==3.11.1
+pyDOE==0.9.3
+pml-pinn @ git+https://github.com/PML-UCF/pinn.git@d0b4fb311c5713895dbf27b26d08785e6903a51e
+
+# --- transitive (pinned for reproducibility) ----------------------------
+absl-py==2.5.0
+astunparse==1.6.3
+certifi==2026.7.22
+charset-normalizer==3.5.1
+contourpy==1.3.3
+cycler==0.12.1
+flatbuffers==25.12.19
+fonttools==4.63.0
+gast==0.7.0
+google-auth==2.56.3
+google-auth-oauthlib==1.4.0
+google-pasta==0.2.0
+grpcio==1.83.0
+h5py==3.16.0
+idna==3.19
+kiwisolver==1.5.0
+libclang==18.1.1
+markdown==3.10.3
+markupsafe==3.0.3
+ml-dtypes==0.3.2
+oauthlib==3.3.1
+opt-einsum==3.4.0
+packaging==26.3
+pillow==12.3.0
+protobuf==4.25.9
+pyasn1==0.6.4
+pyasn1-modules==0.4.2
+pyparsing==3.3.2
+python-dateutil==2.9.0.post0
+requests==2.34.2
+requests-oauthlib==2.0.0
+six==1.17.0
+tensorboard==2.15.2
+tensorboard-data-server==0.7.2
+tensorflow-estimator==2.15.0
+tensorflow-io-gcs-filesystem==0.37.1
+termcolor==3.3.0
+typing-extensions==4.16.0
+urllib3==2.7.0
+werkzeug==3.1.8
+wrapt==1.14.2

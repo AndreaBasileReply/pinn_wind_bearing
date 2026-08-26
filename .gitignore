@@ -106,3 +106,49 @@ venv.bak/
 #Other
 *.csv
 *.h5py
+
+# ==============================================================================
+# Riproduzione IJPHM-2020 su questa macchina
+# ==============================================================================
+
+# --- Dataset (192 MB) -------------------------------------------------------
+# Va scaricato da Harvard Dataverse, non versionato:
+# https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/ENNXLZ
+wind_bearing_dataset/
+
+# Symlink creati verso il dataset per soddisfare i path dei run*.py
+deterministic_grease_inspection/ijphm_2020/data
+deterministic_grease_inspection/ijphm_2020/tables
+
+# --- Artefatti WSL ----------------------------------------------------------
+*:Zone.Identifier
+
+# --- Il paper (riscaricabile, non e' codice) --------------------------------
+*.pdf
+
+# --- Pesi e checkpoint TensorFlow -------------------------------------------
+# *.h5py copre le directory SavedModel; questi sono i file del formato "tf"
+# prodotti da save_weights(), che restano fuori da quel pattern.
+*.h5py.index
+*.h5py.data-*
+checkpoint
+
+# --- Output generati dalle run ----------------------------------------------
+# Rigenerabili con run_cases.sh / run_ablation.sh / plot_comparison.py
+deterministic_grease_inspection/ijphm_2020/*/models/
+deterministic_grease_inspection/ijphm_2020/*/plots/
+*.png
+
+# --- Log e scratch ----------------------------------------------------------
+*.log
+nohup.out
+
+# --- Output degli addestramenti -----------------------------------------
+# Ogni run di train_grease.py / train_bearing.py crea una cartella timestampata
+# con configurazione, modelli, loss, previsioni e grafici. Non va versionata.
+runs/
+results/
+
+# --- File JSON ------------------------------------------------------------
+# config.json e metrics.json sono output di run, non sorgenti.
+*.json

@@ -48,6 +48,8 @@ import os
 
 from pyDOE import lhs
 
+from case_config import SUFFIX, SEED, JUDGMENT
+
 # =============================================================================
 #   RANDOM PLANE GENERATION
 # =============================================================================
@@ -64,15 +66,43 @@ if __name__ == "__main__":
     
     parent_dir = os.path.dirname(os.getcwd())
     
+    if SEED is not None:
+        np.random.seed(SEED)
+
     npnts = 500
-    Xolhs = lhs(n = 3, samples = npnts, criterion = 'maximin', iterations = 10)
+    # pyDOE ignora np.random.seed(): va passato seed= esplicitamente, altrimenti
+    # il piano cambia a ogni esecuzione anche a parita' di CASE.
+    Xolhs = lhs(n = 3, samples = npnts, criterion = 'maximin', iterations = 10,
+                seed = SEED) if SEED is not None else lhs(n = 3, samples = npnts,
+                criterion = 'maximin', iterations = 10)
     lowerBounds = np.asarray([[0.0,1/1500,60.0]])
     upperBounds = np.asarray([[1.0,1/500,80.0]])
     
     scaledXolhs =  np.repeat(lowerBounds, npnts, axis = 0) + Xolhs * (upperBounds - lowerBounds)
     
-    coefrand = np.random.random(4)
+    if JUDGMENT:
+        # Section 3.4: "engineering judgment can be used to limit delta-dGRS, which is
+        # expected to be on the order of magnitude of the observed dGRS divided by the
+        # number of time intervals (i.e., cycles)".  With dGRS ~ 1 over 6*24*30*6 ten-minute
+        # steps, delta-dGRS must be able to reach down to ~1e-6 and up to ~1e-4.  The
+        # unconstrained draw below puts the plane's LOWER bound at 1.3e-4*coefs[0], which
+        # exceeds the early-life increment unless coefs[0] ~ 0, so the offset is bounded
+        # and the slopes are scaled to keep the plane inside the expected band.
+        # All coefficients stay positive (delta-dGRS grows with temperature, load and damage).
+        # Tarato sui dati: dalle 6 ispezioni il Delta d GRS vero sta in [~0, 8.2e-05].
+        # a0 fissa il PAVIMENTO del piano (1.3e-4*a0): se supera l'incremento di inizio
+        # vita, il danno cumulato non puo' piu' scendere sotto e la sovrastima diventa
+        # strutturale, non recuperabile dall'addestramento.  La somma dei coefficienti
+        # fissa il TETTO, che deve superare 8.2e-05.  Tutti positivi: il degrado cresce
+        # con temperatura, carico e danno gia' accumulato.
+        coefrand = np.empty(4)
+        coefrand[0] = np.random.uniform(0.0, 0.02)
+        slopes = np.random.random(3)
+        span = np.random.uniform(0.75, 1.0) - coefrand[0]
+        coefrand[1:] = slopes * span / slopes.sum()
+    else:
+        coefrand = np.random.random(4)
     print(coefrand)
     dfPlane = pd.DataFrame({'dynamicLoads':np.transpose(scaledXolhs)[1],'bearingTemp':np.transpose(scaledXolhs)[2],'Dkappa':np.transpose(scaledXolhs)[0],'delDkappa':deltaGreaseDamagePlane(Xolhs,coefrand)})
-    dfPlane.to_csv(parent_dir+'\data\\random_plane_set_'+str(npnts)+'_adv.csv', index = False)
+    dfPlane.to_csv(parent_dir+'/data/random_plane_set_'+str(npnts)+'_adv'+SUFFIX+'.csv', index = False)
     
