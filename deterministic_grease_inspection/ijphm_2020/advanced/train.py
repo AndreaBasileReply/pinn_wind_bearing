@@ -124,9 +124,28 @@ def sottoinsieme_turbine(n_tot, frac):
 
 
 def sottoinsieme_ispezioni(n_tot, frac):
-    """Ispezioni del cuscinetto tenute da --train-frac: spaziate, l'ultima sempre."""
+    """Ispezioni del cuscinetto tenute da --train-frac: spaziate, l'ultima sempre.
+
+    I livelli sono ANNIDATI: ogni percentuale aggiunge ispezioni a quella sotto invece
+    di ricalcolarle da capo, cosi' salendo lungo la curva cambia solo la taglia del
+    campione e non la sua composizione.  Con np.linspace non era vero (l'ispezione 4
+    entrava al 60% e usciva all'80%) e il salto falsava il confronto fra i livelli.
+
+    Si parte dall'ultima ispezione, poi dalla prima, e ogni aggiunta successiva spezza
+    a meta' il tratto scoperto piu' lungo: la spaziatura resta quella di prima.
+    """
     n = max(1, int(round(frac*n_tot)))
-    return np.unique(np.round(np.linspace(n_tot-1, 0, n)).astype(int))
+    scelti = [n_tot-1] if n == 1 else [0, n_tot-1]
+    while len(scelti) < n:
+        s = sorted(scelti)
+        buchi, prec = [], -1
+        for c in s + [n_tot]:
+            if c - prec > 1:                          # tratto libero fra prec e c
+                buchi.append((prec+1, c-1))
+            prec = c
+        a, b = max(buchi, key=lambda r: r[1]-r[0])
+        scelti.append((a+b)//2)
+    return np.unique(np.asarray(scelti, dtype=int))
 
 
 def aggiorna_loss_on_percentage(percorso, riga):

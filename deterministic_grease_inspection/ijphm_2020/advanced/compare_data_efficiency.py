@@ -60,6 +60,14 @@ ETICHETTE = {'physics': 'PINN — formule SKF',
 COLORI    = {'physics': BLU, 'nophysics': ARA}
 
 
+def lista_casi(v):
+    """--caso 4  oppure  --caso 1,2,3,10  ->  set di interi."""
+    try:
+        return {int(x) for x in str(v).replace(' ', '').split(',') if x}
+    except ValueError:
+        raise argparse.ArgumentTypeError('casi non interi: %r' % v)
+
+
 def _num_pct(v):
     """Normalizza a percentuale: 0.4 -> 40, 40 -> 40.  None se non interpretabile."""
     try:
@@ -139,10 +147,10 @@ def raccogli_csv(f, A):
     if manca:
         sys.exit('%s non e\' un loss_on_percentage.csv: manca %s'
                  % (f, ', '.join(sorted(manca))))
-    if A.caso is not None and 'caso' in d.columns:
-        d = d[d.caso == A.caso]
+    if A.caso and 'caso' in d.columns:
+        d = d[d.caso.isin(A.caso)]
         if d.empty:
-            sys.exit('nessuna riga con caso=%d in %s' % (A.caso, f))
+            sys.exit('nessuna riga con caso in %s in %s' % (sorted(A.caso), f))
     col_b = ('mse_danno_ispezioni' if A.bearing_metric == 'ispezioni'
              else 'mse_danno_curva')
     if A.split == 'train' and A.target != 'cuscinetto':
@@ -177,22 +185,31 @@ def raccogli(cartella, A):
         print('  ! ignorati (nessun metrics.json): %s' % ', '.join(scartati))
     if not righe:
         sys.exit('nessun run valido in %s' % cartella)
-    if A.caso is not None:
-        righe = [r for r in righe if r['caso'] == A.caso]
+    if A.caso:
+        righe = [r for r in righe if r['caso'] in A.caso]
         if not righe:
-            sys.exit('nessun run con caso=%d in %s' % (A.caso, cartella))
+            sys.exit('nessun run con caso in %s in %s' % (sorted(A.caso), cartella))
     senza = [r['run'] for r in righe if r['pct'] is None]
     if senza:
         print('  ! percentuale non ricavabile, run esclusi: %s' % ', '.join(senza))
     return [r for r in righe if r['pct'] is not None]
 
 
-def aggrega(righe, campo):
-    """Media (e banda min-max) per percentuale, sui run che hanno quella metrica."""
+def aggrega(righe, campo, stat='media'):
+    """Statistica centrale per percentuale, con banda di dispersione.
+
+    stat='media'   -> media aritmetica, banda min-max
+    stat='mediana' -> mediana, banda interquartile (robusta agli outlier: con 10 casi
+                      di inizializzazione il paper stesso ne classifica 3 come scadenti)
+    """
     d = pd.DataFrame([r for r in righe if r[campo] is not None])
     if d.empty:
         return d
-    g = d.groupby('pct')[campo].agg(['mean', 'min', 'max', 'count']).reset_index()
+    g = d.groupby('pct')[campo].agg(
+        centro=('median' if stat == 'mediana' else 'mean'),
+        lo=((lambda x: x.quantile(.25)) if stat == 'mediana' else 'min'),
+        hi=((lambda x: x.quantile(.75)) if stat == 'mediana' else 'max'),
+        count='count').reset_index()
     return g.sort_values('pct')
 
 
@@ -210,23 +227,23 @@ def stile(ax, xl, yl, ti, log):
         ax.set_yscale('log')
 
 
-def coincidono(gruppi, campo):
+def coincidono(gruppi, campo, stat='media'):
     """True se le due curve hanno gli stessi valori su tutte le x in comune."""
-    ds = [aggrega(g['righe'], campo) for g in gruppi]
+    ds = [aggrega(g['righe'], campo, stat) for g in gruppi]
     if len(ds) != 2 or any(d.empty for d in ds):
         return False
-    a, b = (d.set_index('pct')['mean'] for d in ds)
+    a, b = (d.set_index('pct')['centro'] for d in ds)
     comune = a.index.intersection(b.index)
     return len(comune) > 0 and np.allclose(a[comune], b[comune], rtol=1e-9, atol=0)
 
 
-def disegna(ax, gruppi, campo, titolo, log):
+def disegna(ax, gruppi, campo, titolo, log, ylab='MSE', etichette_fine=True, stat='media'):
     """Una curva per gruppo, marcatore diverso; barre min-max dove i run sono piu' di uno."""
     # se le curve sono identiche la seconda va tratteggiata, altrimenti sparisce sotto
-    sovrapposte = coincidono(gruppi, campo)
+    sovrapposte = coincidono(gruppi, campo, stat)
     punti, vuoto = [], True
     for i, g in enumerate(gruppi):
-        d = aggrega(g['righe'], campo)
+        d = aggrega(g['righe'], campo, stat)
         if d.empty:
             continue
         vuoto = False
@@ -234,15 +251,15 @@ def disegna(ax, gruppi, campo, titolo, log):
         ls = '--' if (sovrapposte and i) else '-'
         rip = d[d['count'] > 1]
         if len(rip):                              # dispersione fra run allo stesso livello
-            ax.vlines(rip.pct, rip['min'], rip['max'], color=c, lw=1.4, alpha=.55, zorder=2)
-        ax.plot(d.pct, d['mean'], color=c, lw=2.2, ls=ls, marker=mk, ms=7.5,
+            ax.vlines(rip.pct, rip['lo'], rip['hi'], color=c, lw=1.4, alpha=.55, zorder=2)
+        ax.plot(d.pct, d['centro'], color=c, lw=2.2, ls=ls, marker=mk, ms=7.5,
                 mfc=c, mec='white', mew=2, label=g['etichetta'], zorder=3+i, clip_on=False)
         u = d.iloc[-1]
-        punti.append((float(u.pct), float(u['mean']), c))
+        punti.append((float(u.pct), float(u['centro']), c))
     if vuoto:
         ax.text(.5, .5, 'metrica non disponibile', transform=ax.transAxes,
                 ha='center', va='center', fontsize=10, color=MUTO)
-    stile(ax, 'Percentuale di dati di training utilizzati', 'MSE', titolo, log)
+    stile(ax, 'Percentuale di dati di training utilizzati', ylab, titolo, log)
 
     # etichette a fine curva, allontanate fra loro se finirebbero sovrapposte
     dy = [0]*len(punti)
@@ -251,6 +268,8 @@ def disegna(ax, gruppi, campo, titolo, log):
         if abs(ya-yb) < .035:
             dy = [7, -7] if ya >= yb else [-7, 7]
     for (x, y, c), off in zip(punti, dy):
+        if not etichette_fine:
+            break
         ax.annotate('%.3g' % y, (x, y), textcoords='offset points', xytext=(9, off),
                     va='center', fontsize=9, color=c, fontweight='bold',
                     annotation_clip=False)
@@ -262,29 +281,106 @@ def disegna(ax, gruppi, campo, titolo, log):
     return not vuoto
 
 
+def per_caso(A, gruppi, masked_b):
+    """Un pannello per caso, assi y condivisi cosi' i casi sono confrontabili a vista."""
+    campo = 'grasso' if A.target == 'grasso' else 'cuscinetto'
+    if A.target == 'entrambi':
+        print("  ! --per-caso mostra una metrica sola: uso 'cuscinetto'")
+    casi = sorted({r['caso'] for g in gruppi for r in g['righe']
+                   if r['caso'] is not None and r[campo] is not None})
+    if not casi:
+        sys.exit('nessun caso con la metrica %s' % campo)
+
+    # limiti y comuni: senza questo i pannelli non sono confrontabili a occhio
+    vals = [r[campo] for g in gruppi for r in g['righe'] if r[campo] is not None]
+    lo, hi = min(vals), max(vals)
+    marg = (hi/lo)**.08 if not A.linear and lo > 0 else 1
+    ylim = (lo/marg, hi*marg) if marg != 1 else (lo-.05*(hi-lo), hi+.05*(hi-lo))
+    if A.ylim:
+        ylim = A.ylim
+
+    # 4 casi stanno meglio in 2x2 che in 3+1
+    nc = 2 if len(casi) in (2, 4) else min(3, len(casi))
+    nr = -(-len(casi)//nc)
+    # un pannello solo: figura piu' larga, altrimenti titolo e legenda escono dal bordo
+    solo = len(casi) == 1
+    f, axs = plt.subplots(nr, nc, figsize=(6.9 if solo else 4.6*nc, 4.8 if solo else 3.9*nr),
+                          squeeze=False)
+    ylab = 'masked MSE' if (campo == 'grasso' or masked_b) else 'MSE'
+    for k, ax in enumerate(axs.ravel()):
+        if k >= len(casi):
+            ax.axis('off'); continue
+        c = casi[k]
+        sotto = [dict(g, righe=[r for r in g['righe'] if r['caso'] == c]) for g in gruppi]
+        disegna(ax, sotto, campo, '' if solo else 'Caso %d' % c, not A.linear,
+                ylab if k % nc == 0 else '', etichette_fine=solo, stat=A.stat)
+        ax.set_ylim(*ylim)
+        if k // nc != nr-1:
+            ax.set_xlabel('')
+        if k % nc:
+            ax.tick_params(labelleft=False)
+
+    f.suptitle('Masked MSE — caso %d' % casi[0] if solo
+               else 'Masked MSE per caso di inizializzazione',
+               fontsize=15, fontweight='bold', color=INK, x=.012, ha='left',
+               y=.975 if solo else .985)
+    h, l = axs[0][0].get_legend_handles_labels()
+    if h:
+        lg = f.legend(h, l, frameon=False, fontsize=9.5, ncol=len(h),
+                      loc='upper left', bbox_to_anchor=(.008, .95))
+        [t.set_color(INK) for t in lg.get_texts()]
+    f.tight_layout(rect=(0, 0, .96 if solo else 1, .87 if solo else (.93 if nr > 1 else .86)))
+    d = os.path.dirname(os.path.abspath(A.out))
+    if d:
+        os.makedirs(d, exist_ok=True)
+    f.savefig(A.out, dpi=160); plt.close(f)
+
+    tab = pd.concat([pd.DataFrame(g['righe']).assign(gruppo=g['etichetta'])
+                     for g in gruppi], ignore_index=True)
+    csv = os.path.splitext(A.out)[0] + '.csv'
+    tab.sort_values(['gruppo', 'caso', 'pct']).to_csv(csv, index=False)
+    print('\n-> %s\n-> %s' % (A.out, csv))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('sorgente_a', help='loss_on_percentage.csv oppure runs/ del primo metodo')
     ap.add_argument('sorgente_b', nargs='?',
                     help='la seconda sorgente; omettila se la prima contiene i due metodi')
-    ap.add_argument('--caso', type=int, metavar='N',
-                    help='tieni solo questo caso (utile se il CSV ne accumula piu\' di uno)')
+    ap.add_argument('--caso', type=lista_casi, metavar='N[,N...]',
+                    help='tieni solo questi casi, separati da virgola (utile se il CSV '
+                         'ne accumula piu\' di uno): --caso 4  oppure  --caso 1,2,3,10')
     ap.add_argument('--target', choices=('grasso', 'cuscinetto', 'entrambi'),
                     default='cuscinetto',
                     help='quale MSE mostrare (default: cuscinetto)')
     ap.add_argument('--split', choices=('test', 'train'), default='test',
                     help='split su cui calcolare la MSE del grasso (default: test)')
     ap.add_argument('--bearing-metric', choices=('curva', 'ispezioni'), default='ispezioni',
-                    help='MSE del cuscinetto: curva giornaliera o 6 ispezioni (default: curva)')
+                    help='MSE del cuscinetto: curva giornaliera o 6 ispezioni (default: ispezioni)')
     ap.add_argument('--label-a', help='etichetta della prima curva')
     ap.add_argument('--label-b', help='etichetta della seconda curva')
     ap.add_argument('--full-turbine', type=int, default=10,
                     help='turbine del dataset completo, per il calcolo di ripiego (default: 10)')
+    ap.add_argument('--stat', choices=('media', 'mediana'), default='media',
+                    help='statistica su cui aggregare i casi: media con banda min-max, '
+                         'oppure mediana con banda interquartile (default: media)')
+    ap.add_argument('--per-caso', action='store_true',
+                    help='un pannello per caso invece di una curva media: mostra la '
+                         'dispersione fra inizializzazioni senza nasconderla in una media')
+    ap.add_argument('--ylim', metavar='LO,HI',
+                    help='limiti fissi dell\'asse y (es. 3e-7,4e-5): indispensabile per '
+                         'confrontare immagini generate separatamente')
     ap.add_argument('--linear', action='store_true', help='asse y lineare invece che log')
     ap.add_argument('--out', default='data_efficiency_comparison.png',
                     help='PNG di uscita; la tabella va nel .csv con lo stesso nome')
     A = ap.parse_args()
+    if A.ylim:
+        try:
+            A.ylim = tuple(float(x) for x in A.ylim.split(','))
+            assert len(A.ylim) == 2 and A.ylim[0] < A.ylim[1]
+        except (ValueError, AssertionError):
+            sys.exit('--ylim vuole LO,HI con LO < HI (es. 3e-7,4e-5)')
 
     # una sorgente sola che contiene i due metodi si divide da se'
     una = A.sorgente_b is None or (os.path.exists(A.sorgente_b) and
@@ -339,17 +435,28 @@ def main():
               '  Servono run a 20/40/60/80/100%% di dati di training in ogni cartella.'
               % ', '.join('%g%%' % p for p in pcts))
 
-    ti_b = ('masked MSE sulle 6 ispezioni del danno' if A.bearing_metric == 'ispezioni'
+    masked_b = A.bearing_metric == 'ispezioni'
+    if A.per_caso:
+        return per_caso(A, gruppi, masked_b)
+
+    ti_b = ('masked MSE sulle 6 ispezioni del danno' if masked_b
             else 'MSE sulla curva giornaliera del danno')
-    campi = [('grasso', 'MSE grasso (%s, 6 ispezioni x turbina)' % A.split)] \
+    # il grasso e' sempre valutato sulle sole ispezioni: e' la masked MSE dell'eq. 10
+    yl_g, yl_b = 'masked MSE', 'masked MSE' if masked_b else 'MSE'
+    campi = [('grasso', 'MSE grasso (%s, 6 ispezioni x turbina)' % A.split, yl_g)] \
             if A.target == 'grasso' else \
-            [('cuscinetto', ti_b)] \
+            [('cuscinetto', ti_b, yl_b)] \
             if A.target == 'cuscinetto' else \
-            [('grasso', 'Grasso — MSE %s' % A.split), ('cuscinetto', ti_b)]
+            [('grasso', 'Grasso — MSE %s' % A.split, yl_g), ('cuscinetto', ti_b, yl_b)]
 
     f, axs = plt.subplots(1, len(campi), figsize=(6.9*len(campi), 4.8), squeeze=False)
-    for ax, (campo, ti) in zip(axs[0], campi):
-        disegna(ax, gruppi, campo, ti, not A.linear)
+    n_casi = len({r['caso'] for g in gruppi for r in g['righe'] if r['caso'] is not None})
+    for ax, (campo, ti, yl) in zip(axs[0], campi):
+        if n_casi > 1:
+            ti = '%s — %s su %d casi' % (ti, A.stat, n_casi)
+        disegna(ax, gruppi, campo, ti, not A.linear, yl, stat=A.stat)
+        if A.ylim:
+            ax.set_ylim(*A.ylim)
     # titolo e legenda incolonnati a sinistra: non si scontrano a nessuna larghezza
     f.suptitle('Data efficiency comparison', fontsize=15, fontweight='bold',
                color=INK, x=.012, ha='left', y=.975)
