@@ -23,19 +23,25 @@ I passi 1-3 sono identici nei due casi: il grasso non dipende dalla scelta.
 
 SPLIT: le turbine sono 14.  Le prime 10 stanno in *_6Months.csv, le altre quattro
 (Turbine11..14) in *_6Months_Val_adv.csv, gia' tenute fuori dal training nel
-codice originale.  Di default val = 11,12 e test = 13,14, il resto training;
+codice originale.  Di default val = 11,12 e test = 8,13,14, il resto training;
 --turbine-val e --turbine-test accettano qualunque sottoinsieme di 1..14.  Il
 danno del grasso e' misurato per tutte, quindi val e test sono valutazioni vere.
+
+La turbina 8 sta in test perche' e' l'unica con la verita' sul cuscinetto: se
+fosse in training, il d_GRS che alimenta il passo 4 sarebbe su dati gia' visti e
+la valutazione end-to-end non varrebbe niente.
 
 NOTA SUI DATI: la verita' sul danno del cuscinetto esiste per una sola turbina,
 in True_FatigueDamage_6Months_bsc.csv, e il file non dice quale.  Dando in pasto
 alla catena SKF il grasso reale di ognuna delle 10 turbine, il danno finale
 combacia solo per la turbina 8 (+0.35%); la piu' vicina dopo di lei e' la 7, che
 sbaglia del -8.7%, e la turbina 1 del +43.4%.  Da qui il default --turbina 8.
-Il passo 4 quindi non ha uno split: c'e' una sola curva di verita', usata per
-addestrare (--no-physics) o solo per valutare (--physics).  Con il default la
-turbina 8 e' anche in training del grasso, quindi il suo d_GRS non e' su dati
-non visti; passarla a --turbine-test la rende un test pulito anche li'.
+Non essendoci altre turbine da tenere da parte, il passo 4 si divide nel tempo:
+con --no-physics l'MLP si addestra sui primi (1 - --bearing-test-frac) della
+curva e viene valutato sulla coda, che non ha mai visto; con --physics non si
+addestra niente, quindi la curva e' test per intero.  In metrics.json le chiavi
+cuscinetto_test_* sono sempre fuori campione, le cuscinetto_train_* esistono
+solo con --no-physics.
 
 FRAZIONI: --frac riduce i dati di training e ripete l'intera pipeline una volta
 per percentuale, per le curve di data efficiency:
@@ -60,7 +66,7 @@ Ogni run scrive in runs/<timestamp>_case<N>_<physics|nophysics>/:
                            (normalizzato sull'escursione del vero) e r2
   loss_history.csv         fase, epoch, train_loss, val_loss, test_loss
   grease_predictions.csv   per turbina e ispezione: reale, previsto, split
-  bearing_predictions.csv  la curva di danno del cuscinetto: reale, previsto
+  bearing_predictions.csv  la curva di danno del cuscinetto: reale, previsto, split
   models/                  modelli salvati (.keras) e pesi della RNN
   plots/                   grafici di riepilogo
 
@@ -408,7 +414,15 @@ def cuscinetto_fisica(ingressi):
                              myDtype=DTYPE, return_sequences=True)
 
 
-def cuscinetto_mlp(ingressi, incremento_max, lr):
+def perdita_prefisso(n_train):
+    """MSE sui soli primi n_train passi: la coda e' test e il modello non la vede."""
+    def perdita(y_true, y_pred):
+        return tf.keras.losses.mean_squared_error(y_true[:, :n_train, :],
+                                                  y_pred[:, :n_train, :])
+    return perdita
+
+
+def cuscinetto_mlp(ingressi, incremento_max, lr, perdita):
     """L'MLP che sostituisce la catena SKF, dentro la stessa cella di accumulo.
 
     Stessi ingressi della catena (piu' lo stato) e stessa uscita: l'incremento di
@@ -433,24 +447,34 @@ def cuscinetto_mlp(ingressi, incremento_max, lr):
                                  dtype=DTYPE, initial_damage=d0)
     modello = Sequential([RNN(cell=cella, return_sequences=True,
                               return_state=False, batch_input_shape=ingressi.shape)])
-    modello.compile(loss='mse', optimizer=RMSprop(lr), metrics=['mae'])
+    modello.compile(loss=perdita, optimizer=RMSprop(lr), metrics=['mae'])
     return modello, interno
 
 
-def addestra_cuscinetto(A, dati, dkappa, out, righe_loss):
+def addestra_cuscinetto(A, dati, dkappa, out, righe_loss, split):
+    """Passo 4.  La turbina con la verita' e' una sola: se sta in --turbine-test il
+    suo grasso e' fuori campione, e con --no-physics anche la coda della curva di
+    danno viene tenuta fuori dal training."""
     ingressi = ingressi_cuscinetto(dati, dkappa, A.turbina)
     vero = dati['danno_vero']
     scala = float(vero[-1])   # normalizza la curva: il danno vero e' ~1e-2
+    n = len(vero)
+    dove = next((s for s in ('test', 'val', 'train') if A.turbina in split[s]), 'train')
 
     if A.physics:
-        print('\n[4/4] catena SKF  (nessun addestramento)')
+        print('\n[4/4] catena SKF  (nessun addestramento: tutta la curva e\' test)')
+        n_train = 0
         modello = cuscinetto_fisica(ingressi)
         previsto = modello.predict(ingressi, verbose=0)[0, :, 0]
     else:
+        n_train = int(round(n * (1.0 - A.bearing_test_frac)))
         print('\n[4/4] MLP al posto della catena SKF  (%d epoche)' % A.bearing_epochs)
+        print('      training sui primi %d passi, test sugli ultimi %d (%.0f%%)'
+              % (n_train, n - n_train, 100 * A.bearing_test_frac))
         # in unita' normalizzate il danno finale vale 1: l'incremento medio per
         # passo e' 1/n_passi, e ne lasciamo un margine di 4x al modello.
-        modello, interno = cuscinetto_mlp(ingressi, 4.0 / dati['n_passi'], 5e-4)
+        modello, interno = cuscinetto_mlp(ingressi, 4.0 / dati['n_passi'], 5e-4,
+                                          perdita_prefisso(n_train))
         h = modello.fit(ingressi, (vero / scala)[None, :, None].astype(DTYPE),
                         epochs=A.bearing_epochs, verbose=2, steps_per_epoch=1,
                         callbacks=[ReduceLROnPlateau(monitor='loss', factor=0.7,
@@ -461,17 +485,24 @@ def addestra_cuscinetto(A, dati, dkappa, out, righe_loss):
         modello.save_weights(os.path.join(out, 'models', 'rnn_cuscinetto'))
         previsto = modello.predict(ingressi, verbose=0)[0, :, 0] * scala
 
-    pd.DataFrame({'passo': np.arange(len(vero)), 'turbina': A.turbina,
+    etichette = np.where(np.arange(n) < n_train, 'train', 'test')
+    pd.DataFrame({'passo': np.arange(n), 'turbina': A.turbina, 'split': etichette,
                   'reale': vero, 'previsto': previsto}
                  ).to_csv(os.path.join(out, 'bearing_predictions.csv'), index=False)
-    grafico_cuscinetto(vero, previsto, A.physics, out)
+    grafico_cuscinetto(vero, previsto, A.physics, n_train, out)
+
     m = {'cuscinetto_turbina': A.turbina,
-         'cuscinetto_in_sample': not A.physics,
+         'cuscinetto_split_grasso': dove,
+         'cuscinetto_passi_train': n_train,
+         'cuscinetto_passi_test': n - n_train,
          'cuscinetto_danno_finale_vero': float(vero[-1]),
          'cuscinetto_danno_finale_previsto': float(previsto[-1]),
          'cuscinetto_errore_relativo_finale': float((previsto[-1] - vero[-1]) / vero[-1])}
-    for nome, valore in metriche_regressione(vero, previsto).items():
-        m['cuscinetto_curva_%s' % nome] = valore
+    for nome, valore in metriche_regressione(vero[n_train:], previsto[n_train:]).items():
+        m['cuscinetto_test_%s' % nome] = valore
+    if n_train:
+        for nome, valore in metriche_regressione(vero[:n_train], previsto[:n_train]).items():
+            m['cuscinetto_train_%s' % nome] = valore
     return m
 
 
@@ -515,8 +546,10 @@ def grafico_loss(righe_loss, out):
     return df
 
 
-def grafico_cuscinetto(vero, previsto, fisica, out):
+def grafico_cuscinetto(vero, previsto, fisica, n_train, out):
     plt.figure(figsize=(6, 4.5))
+    if n_train:
+        plt.axvspan(0, n_train, color='0.92', lw=0, label='visto in training')
     plt.plot(vero, 'k-', label='danno reale')
     plt.plot(previsto, '--', c='C0' if fisica else 'C3',
              label='previsto (%s)' % ('catena SKF' if fisica else 'MLP'))
@@ -546,7 +579,7 @@ def esegui_uno(A, dati, split, pct, out):
     t0 = time.time()
     righe_loss = []
     dkappa, ispezioni, metriche = addestra_grasso(A, dati, split, out, righe_loss)
-    metriche.update(addestra_cuscinetto(A, dati, dkappa, out, righe_loss))
+    metriche.update(addestra_cuscinetto(A, dati, dkappa, out, righe_loss, split))
     metriche['secondi'] = round(time.time() - t0, 1)
 
     grafico_loss(righe_loss, out).to_csv(
@@ -599,8 +632,12 @@ def main():
                          'un training per percentuale (default: 100)')
     ap.add_argument('--turbine-val', default='11,12', metavar='LISTA',
                     help='turbine di validazione (default: 11,12)')
-    ap.add_argument('--turbine-test', default='13,14', metavar='LISTA',
-                    help='turbine di test (default: 13,14)')
+    ap.add_argument('--turbine-test', default='8,13,14', metavar='LISTA',
+                    help='turbine di test (default: 8,13,14 -- la 8 e\' l\'unica con '
+                         'la verita\' sul cuscinetto, quindi sta fuori dal training)')
+    ap.add_argument('--bearing-test-frac', type=float, default=0.3, metavar='F',
+                    help='coda della curva del cuscinetto tenuta fuori dal training, '
+                         'solo con --no-physics (default: 0.3)')
     ap.add_argument('--turbina', type=int, default=8, choices=range(1, 11), metavar='N',
                     help="turbina con la verita' sul cuscinetto (default: 8)")
     ap.add_argument('--mlp-epochs', type=int, default=500, help='passo 2 (default: 500)')
