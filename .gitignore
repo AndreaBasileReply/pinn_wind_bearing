@@ -106,3 +106,19 @@ venv.bak/
 #Other
 *.csv
 *.h5py
+
+# --- Artefatti locali di lavoro (non versionati) ---
+
+# Output degli esperimenti: checkpoint, metriche e plot per run
+deterministic_grease_inspection/ijphm_2020/advanced/runs/
+
+# Symlink locali al dataset
+deterministic_grease_inspection/ijphm_2020/data
+deterministic_grease_inspection/ijphm_2020/tables
+
+# Materiale di presentazione e figure generate
+presentation/
+*.png
+
+# Paper e documenti scaricati
+*.pdf
