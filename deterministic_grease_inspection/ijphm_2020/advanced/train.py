@@ -56,7 +56,8 @@ visto che la catena SKF non si addestra.
 Ogni run scrive in runs/<timestamp>_case<N>_<physics|nophysics>/:
 
   config.json              tutti gli argomenti, lo split e le ispezioni usate
-  metrics.json             metriche finali per split e per ramo
+  metrics.json             per ogni split e per ogni ramo: rmse, mae, rmse_rel
+                           (normalizzato sull'escursione del vero) e r2
   loss_history.csv         fase, epoch, train_loss, val_loss, test_loss
   grease_predictions.csv   per turbina e ispezione: reale, previsto, split
   bearing_predictions.csv  la curva di danno del cuscinetto: reale, previsto
@@ -200,6 +201,27 @@ def bersaglio_grasso(dati, turbine, ispezioni):
 #   passi 1-3: il grasso
 # =============================================================================
 
+def metriche_regressione(vero, previsto):
+    """Le quattro metriche con cui valutiamo qualunque ramo.
+
+    rmse e mae sono in scala assoluta: confrontabili fra run sullo stesso
+    dataset, muti presi da soli.  rmse_rel li rende leggibili normalizzando
+    sull'escursione del valore vero, e r2 dice quanta della sua varianza e'
+    spiegata (1 = perfetto, 0 = tanto vale prevedere la media).
+    """
+    vero = np.asarray(vero, dtype='float64').ravel()
+    previsto = np.asarray(previsto, dtype='float64').ravel()
+    err = previsto - vero
+    ss_res = float(np.sum(err ** 2))
+    ss_tot = float(np.sum((vero - vero.mean()) ** 2))
+    escursione = float(np.ptp(vero))
+    rmse = float(np.sqrt(np.mean(err ** 2)))
+    return {'rmse': rmse,
+            'mae': float(np.mean(np.abs(err))),
+            'rmse_rel': rmse / escursione if escursione > 0 else float('nan'),
+            'r2': 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')}
+
+
 def costruisci_mlp_grasso(piano):
     """MLP del passo 2: (Dkappa, 1/P, T) -> incremento di danno normalizzato."""
     ingressi = piano[['Dkappa', 'dynamicLoads', 'bearingTemp']]
@@ -321,8 +343,8 @@ def addestra_grasso(A, dati, split, out, righe_loss):
                 righe.append({'split': s, 'turbina': turbina, 'ispezione': j + 1,
                               'passo': int(passo), 'reale': float(v[k, j]),
                               'previsto': float(y[k, j])})
-        metriche['grasso_%s_rmse' % s] = float(np.sqrt(np.mean((y - v) ** 2)))
-        metriche['grasso_%s_mae' % s] = float(np.mean(np.abs(y - v)))
+        for nome, valore in metriche_regressione(v, y).items():
+            metriche['grasso_%s_%s' % (s, nome)] = valore
     metriche['grasso_train_rmse_prima'] = float(np.sqrt(np.mean(
         (prima[:, ispezioni, 0] - bersaglio['train'][:, :, 0]) ** 2)))
     pd.DataFrame(righe).to_csv(os.path.join(out, 'grease_predictions.csv'), index=False)
@@ -443,11 +465,14 @@ def addestra_cuscinetto(A, dati, dkappa, out, righe_loss):
                   'reale': vero, 'previsto': previsto}
                  ).to_csv(os.path.join(out, 'bearing_predictions.csv'), index=False)
     grafico_cuscinetto(vero, previsto, A.physics, out)
-    return {'cuscinetto_turbina': A.turbina,
-            'cuscinetto_danno_finale_vero': float(vero[-1]),
-            'cuscinetto_danno_finale_previsto': float(previsto[-1]),
-            'cuscinetto_errore_relativo_finale': float((previsto[-1] - vero[-1]) / vero[-1]),
-            'cuscinetto_rmse_curva': float(np.sqrt(np.mean((previsto - vero) ** 2)))}
+    m = {'cuscinetto_turbina': A.turbina,
+         'cuscinetto_in_sample': not A.physics,
+         'cuscinetto_danno_finale_vero': float(vero[-1]),
+         'cuscinetto_danno_finale_previsto': float(previsto[-1]),
+         'cuscinetto_errore_relativo_finale': float((previsto[-1] - vero[-1]) / vero[-1])}
+    for nome, valore in metriche_regressione(vero, previsto).items():
+        m['cuscinetto_curva_%s' % nome] = valore
+    return m
 
 
 # =============================================================================
